@@ -24,16 +24,11 @@ except Exception:
 
 
 load_dotenv()
-
 api_key = os.getenv("OPENAI_API_KEY")
 
-st.set_page_config(
-    page_title="물류 사진 자동 검수봇",
-    layout="wide"
-)
-
+st.set_page_config(page_title="물류 사진 자동 검수봇", layout="wide")
 st.title("📦 물류 사진 자동 검수봇")
-st.caption("피킹리스트는 GPT-4.1로 행 개수까지 검증하고, 상품라벨은 실제 바코드를 스캔합니다.")
+st.caption("피킹리스트는 GPT-4.1로 제품 포장 정보 표만 읽고, 상품라벨은 실제 바코드를 스캔합니다.")
 
 if not api_key:
     st.error("OPENAI_API_KEY를 찾을 수 없습니다.")
@@ -50,21 +45,26 @@ def read_picklist_with_gpt(pick_img):
     prompt = """
 너는 물류 피킹리스트 판독 AI다.
 
-이미지에서 "제품 포장 정보" 표를 가장 중요하게 읽는다.
+반드시 이미지 하단의 "제품 포장 정보" 표만 기준으로 읽는다.
 
-반드시 아래 순서로 작업한다.
+읽어야 할 항목:
+1. wave_no
+2. 제품 포장 정보 표의 EAN
+3. 제품 포장 정보 표의 오른쪽 끝 "포장수량" 값
 
-1. 제품 포장 정보 표의 데이터 행 개수를 센다.
-2. 표의 모든 행을 빠짐없이 추출한다.
-3. 각 행에서 EAN과 포장수량을 추출한다.
-4. wave_no를 추출한다.
+절대 하면 안 되는 것:
+- 상단 품목 리스트의 PCS 값을 expected_qty로 사용하지 않는다.
+- 상단 품목 리스트의 PCS 21, 42, 84 같은 숫자를 사용하지 않는다.
+- 하단 합계 수량을 개별 EAN expected_qty로 사용하지 않는다.
+- 손글씨, 동그라미, 체크표시 안의 숫자를 수량으로 사용하지 않는다.
+- 상품명으로 EAN을 추정하지 않는다.
 
 중요 규칙:
-- 제품 포장 정보 표의 모든 행을 누락하지 않는다.
-- 손글씨, 동그라미, 체크표시는 무시한다.
-- 상품명으로 EAN을 추정하지 않는다.
-- 피킹 상단 품목 리스트보다 "제품 포장 정보" 표를 우선한다.
+- 제품 포장 정보 표의 데이터 행 개수를 먼저 센다.
+- 표의 모든 행을 빠짐없이 추출한다.
 - EAN은 13자리 숫자만 인정한다.
+- expected_qty는 반드시 같은 행의 "포장수량" 열에서만 가져온다.
+- 포장수량이 동그라미 쳐져 있어도 인쇄된 숫자를 읽는다.
 - 포장수량이 1이면 반드시 1로 기록한다.
 - 숫자가 불명확한 행은 pick_list에 넣지 말고 uncertain_pick_list에 넣는다.
 - row_count는 제품 포장 정보 표에서 보이는 데이터 행 개수다.
@@ -86,7 +86,7 @@ JSON 형식:
   "uncertain_pick_list":[
     {
       "raw_text":"불명확한 행 내용",
-      "reason":"EAN 숫자가 흐림"
+      "reason":"EAN 또는 포장수량이 흐림"
     }
   ]
 }
@@ -257,7 +257,6 @@ if st.button("검수 시작"):
         has_error = True
 
     st.subheader("검수 결과")
-
     st.write(f"웨이브 : {pick_data.get('wave_no', '')}")
 
     if has_error:
@@ -270,7 +269,7 @@ if st.button("검수 시작"):
 
     if row_count != pick_list_count:
         st.warning(
-            f"피킹리스트 행 개수 확인필요: 표 행 {row_count}개 / 추출 {pick_list_count}개"
+            f"피킹리스트 행 개수 확인필요: 제품 포장 정보 표 행 {row_count}개 / 추출 {pick_list_count}개"
         )
 
     if uncertain_pick_list:
