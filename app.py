@@ -8,7 +8,7 @@ from io import BytesIO
 
 import pandas as pd
 from dotenv import load_dotenv
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, ImageOps
 
 try:
     import truststore
@@ -39,6 +39,7 @@ client = OpenAI(api_key=api_key)
 
 
 def file_to_base64(file):
+    file.seek(0)
     return base64.b64encode(file.getvalue()).decode("utf-8")
 
 
@@ -48,15 +49,32 @@ def pil_to_base64(image):
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
+def open_image_with_rotation(uploaded_file):
+    """
+    휴대폰 사진의 EXIF 회전값을 반영해서 이미지 열기.
+    옆으로 누워 들어가는 문제 방지.
+    """
+    uploaded_file.seek(0)
+    image = Image.open(uploaded_file)
+    image = ImageOps.exif_transpose(image)
+    image = image.convert("RGB")
+    return image
+
+
 def crop_picklist_packaging_table(uploaded_file):
     """
-    피킹리스트 하단의 '제품 포장 정보' 표 영역만 크롭.
-    상단 품목 리스트의 PCS와 하단 합계/서명 영역을 최대한 제외하기 위한 비율 크롭.
+    피킹리스트의 '제품 포장 정보' 표 영역만 크롭.
+    EXIF 회전 보정 + 자동 방향 보정 + 확대 + 선명도/대비 향상.
     """
-    image = Image.open(uploaded_file).convert("RGB")
+    image = open_image_with_rotation(uploaded_file)
     w, h = image.size
 
-    # 세로 사진 기준: 제품 포장 정보 표는 대략 중간 아래쪽에 위치
+    # 가로로 누운 원본이면 세로 기준으로 먼저 회전
+    if w > h:
+        image = image.rotate(90, expand=True)
+        w, h = image.size
+
+    # 제품 포장 정보 표 영역 비율 크롭
     left = int(w * 0.06)
     top = int(h * 0.40)
     right = int(w * 0.94)
@@ -64,15 +82,20 @@ def crop_picklist_packaging_table(uploaded_file):
 
     cropped = image.crop((left, top, right, bottom))
 
-    # 확대 + 약간 선명하게
+    # GPT가 보기 좋게 가로 방향으로 회전
+    if cropped.height > cropped.width:
+        cropped = cropped.rotate(90, expand=True)
+
+    # 확대
     scale = 2
-    cropped = cropped.resize((cropped.width * scale, cropped.height * scale))
+    cropped = cropped.resize(
+        (cropped.width * scale, cropped.height * scale),
+        Image.Resampling.LANCZOS
+    )
 
-    enhancer = ImageEnhance.Sharpness(cropped)
-    cropped = enhancer.enhance(1.6)
-
-    enhancer = ImageEnhance.Contrast(cropped)
-    cropped = enhancer.enhance(1.15)
+    # 선명도 + 대비 향상
+    cropped = ImageEnhance.Sharpness(cropped).enhance(2.0)
+    cropped = ImageEnhance.Contrast(cropped).enhance(1.3)
 
     return cropped
 
@@ -146,6 +169,8 @@ JSON 형식:
 
 
 def read_wave_no_with_gpt(pick_img):
+    image = open_image_with_rotation(pick_img)
+
     prompt = """
 피킹리스트 이미지에서 Wave No 또는 웨이브번호만 읽어라.
 반드시 JSON만 출력한다.
@@ -165,7 +190,7 @@ def read_wave_no_with_gpt(pick_img):
                     {"type": "input_text", "text": prompt},
                     {
                         "type": "input_image",
-                        "image_url": f"data:image/png;base64,{file_to_base64(pick_img)}"
+                        "image_url": f"data:image/png;base64,{pil_to_base64(image)}"
                     }
                 ]
             }
@@ -181,7 +206,7 @@ def scan_barcodes_from_image(uploaded_file):
     if zxingcpp is None:
         raise RuntimeError("zxing-cpp가 설치되지 않았습니다.")
 
-    image = Image.open(uploaded_file).convert("RGB")
+    image = open_image_with_rotation(uploaded_file)
     results = zxingcpp.read_barcodes(image)
 
     barcodes = []
