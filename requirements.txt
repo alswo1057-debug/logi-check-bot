@@ -3,3 +3,5 @@ openai
 python-dotenv
 pandas
 truststore
+pillow
+zxing-cpp
