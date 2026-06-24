@@ -9,7 +9,6 @@ import pandas as pd
 from dotenv import load_dotenv
 from PIL import Image
 
-# SSL 인증서 문제 해결
 try:
     import truststore
     truststore.inject_into_ssl()
@@ -18,16 +17,11 @@ except Exception:
 
 from openai import OpenAI
 
-# 바코드 스캔
 try:
     import zxingcpp
 except Exception:
     zxingcpp = None
 
-
-# =========================
-# 기본 설정
-# =========================
 
 load_dotenv()
 
@@ -39,7 +33,7 @@ st.set_page_config(
 )
 
 st.title("📦 물류 사진 자동 검수봇")
-st.caption("피킹리스트는 GPT가 읽고, 상품라벨은 바코드 스캐너가 실제 바코드를 읽습니다.")
+st.caption("피킹리스트는 GPT-4.1로 행 개수까지 검증하고, 상품라벨은 실제 바코드를 스캔합니다.")
 
 if not api_key:
     st.error("OPENAI_API_KEY를 찾을 수 없습니다.")
@@ -48,92 +42,89 @@ if not api_key:
 client = OpenAI(api_key=api_key)
 
 
-# =========================
-# 이미지 Base64 변환
-# =========================
-
 def img64(file):
     return base64.b64encode(file.getvalue()).decode("utf-8")
 
-
-# =========================
-# 피킹리스트 GPT 분석
-# =========================
 
 def read_picklist_with_gpt(pick_img):
     prompt = """
 너는 물류 피킹리스트 판독 AI다.
 
-피킹리스트 이미지에서 아래 항목만 추출한다.
+이미지에서 "제품 포장 정보" 표를 가장 중요하게 읽는다.
 
-1. wave_no
-2. 제품 포장 정보 영역의 EAN
-3. 각 EAN별 포장수량
+반드시 아래 순서로 작업한다.
+
+1. 제품 포장 정보 표의 데이터 행 개수를 센다.
+2. 표의 모든 행을 빠짐없이 추출한다.
+3. 각 행에서 EAN과 포장수량을 추출한다.
+4. wave_no를 추출한다.
 
 중요 규칙:
-- 피킹리스트의 제품 포장 정보 표를 우선한다.
+- 제품 포장 정보 표의 모든 행을 누락하지 않는다.
+- 손글씨, 동그라미, 체크표시는 무시한다.
 - 상품명으로 EAN을 추정하지 않는다.
-- 숫자가 불명확하면 추측하지 말고 제외한다.
+- 피킹 상단 품목 리스트보다 "제품 포장 정보" 표를 우선한다.
+- EAN은 13자리 숫자만 인정한다.
+- 포장수량이 1이면 반드시 1로 기록한다.
+- 숫자가 불명확한 행은 pick_list에 넣지 말고 uncertain_pick_list에 넣는다.
+- row_count는 제품 포장 정보 표에서 보이는 데이터 행 개수다.
+- pick_list_count는 pick_list에 넣은 행 개수다.
 - 반드시 JSON만 출력한다.
 - 설명 문장은 출력하지 않는다.
 
 JSON 형식:
 {
   "wave_no":"0000000000",
+  "row_count":3,
+  "pick_list_count":3,
   "pick_list":[
     {
       "ean":"8800000000000",
-      "expected_qty":2
+      "expected_qty":1
+    }
+  ],
+  "uncertain_pick_list":[
+    {
+      "raw_text":"불명확한 행 내용",
+      "reason":"EAN 숫자가 흐림"
     }
   ]
 }
 """
 
-    content = [
-        {
-            "type": "input_text",
-            "text": prompt
-        },
-        {
-            "type": "input_image",
-            "image_url": f"data:image/png;base64,{img64(pick_img)}"
-        }
-    ]
-
     response = client.responses.create(
-        model="gpt-4.1-mini",
+        model="gpt-4.1",
         input=[
             {
                 "role": "user",
-                "content": content
+                "content": [
+                    {"type": "input_text", "text": prompt},
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:image/png;base64,{img64(pick_img)}"
+                    }
+                ]
             }
         ]
     )
 
-    result = response.output_text.strip()
-    result = result.replace("```json", "").replace("```", "").strip()
+    text = response.output_text.strip()
+    text = text.replace("```json", "").replace("```", "").strip()
 
-    return json.loads(result)
+    return json.loads(text)
 
-
-# =========================
-# 상품라벨 바코드 스캔
-# =========================
 
 def scan_barcodes_from_image(uploaded_file):
     if zxingcpp is None:
-        raise RuntimeError("zxing-cpp가 설치되지 않았습니다. requirements.txt에 zxing-cpp를 추가해주세요.")
+        raise RuntimeError("zxing-cpp가 설치되지 않았습니다.")
 
     image = Image.open(uploaded_file).convert("RGB")
-
     results = zxingcpp.read_barcodes(image)
 
     barcodes = []
 
     for r in results:
         value = str(r.text).strip()
-
-        # EAN은 보통 13자리. 혹시 앞뒤 공백/문자 제거
         digits = "".join([c for c in value if c.isdigit()])
 
         if len(digits) in [12, 13, 14]:
@@ -150,7 +141,6 @@ def scan_all_label_images(label_imgs):
         try:
             eans = scan_barcodes_from_image(img)
         except Exception as e:
-            eans = []
             scan_detail.append({
                 "file": img.name,
                 "status": "스캔오류",
@@ -170,10 +160,6 @@ def scan_all_label_images(label_imgs):
     return all_eans, scan_detail
 
 
-# =========================
-# 업로드 화면
-# =========================
-
 pick_img = st.file_uploader(
     "피킹리스트 사진",
     type=["png", "jpg", "jpeg"]
@@ -185,9 +171,6 @@ label_imgs = st.file_uploader(
     accept_multiple_files=True
 )
 
-# =========================
-# 검수
-# =========================
 
 if st.button("검수 시작"):
 
@@ -199,7 +182,6 @@ if st.button("검수 시작"):
         st.warning("상품라벨 사진을 업로드해주세요.")
         st.stop()
 
-    # 1. 피킹리스트 GPT 판독
     try:
         with st.spinner("피킹리스트 분석 중..."):
             pick_data = read_picklist_with_gpt(pick_img)
@@ -210,7 +192,6 @@ if st.button("검수 시작"):
         st.code(traceback.format_exc())
         st.stop()
 
-    # 2. 상품라벨 바코드 스캔
     try:
         with st.spinner("상품라벨 바코드 스캔 중..."):
             label_eans, scan_detail = scan_all_label_images(label_imgs)
@@ -221,7 +202,6 @@ if st.button("검수 시작"):
         st.code(traceback.format_exc())
         st.stop()
 
-    # 3. 비교
     expected = {
         str(x["ean"]): int(x["expected_qty"])
         for x in pick_data.get("pick_list", [])
@@ -234,39 +214,39 @@ if st.button("검수 시작"):
     has_error = False
 
     for ean, exp_qty in expected.items():
-
         act_qty = actual.get(ean, 0)
-
         result = "일치" if exp_qty == act_qty else "불일치"
 
         if result == "불일치":
             has_error = True
 
-        rows.append(
-            {
-                "EAN": ean,
-                "예정수량": exp_qty,
-                "사진수량": act_qty,
-                "결과": result
-            }
-        )
+        rows.append({
+            "EAN": ean,
+            "예정수량": exp_qty,
+            "사진수량": act_qty,
+            "결과": result
+        })
 
     for ean, qty in actual.items():
-
         if ean not in expected:
-
             has_error = True
+            rows.append({
+                "EAN": ean,
+                "예정수량": 0,
+                "사진수량": qty,
+                "결과": "예정에 없음"
+            })
 
-            rows.append(
-                {
-                    "EAN": ean,
-                    "예정수량": 0,
-                    "사진수량": qty,
-                    "결과": "예정에 없음"
-                }
-            )
+    row_count = int(pick_data.get("row_count", 0))
+    pick_list_count = len(pick_data.get("pick_list", []))
+    uncertain_pick_list = pick_data.get("uncertain_pick_list", [])
 
-    # 바코드 미검출 파일이 있으면 확인필요 처리
+    if row_count != pick_list_count:
+        has_error = True
+
+    if uncertain_pick_list:
+        has_error = True
+
     no_barcode_files = [
         x["file"]
         for x in scan_detail
@@ -276,7 +256,6 @@ if st.button("검수 시작"):
     if no_barcode_files:
         has_error = True
 
-    # 4. 결과 출력
     st.subheader("검수 결과")
 
     st.write(f"웨이브 : {pick_data.get('wave_no', '')}")
@@ -287,22 +266,27 @@ if st.button("검수 시작"):
         st.success("이상없음")
 
     result_df = pd.DataFrame(rows)
+    st.dataframe(result_df, use_container_width=True)
 
-    st.dataframe(
-        result_df,
-        use_container_width=True
-    )
+    if row_count != pick_list_count:
+        st.warning(
+            f"피킹리스트 행 개수 확인필요: 표 행 {row_count}개 / 추출 {pick_list_count}개"
+        )
+
+    if uncertain_pick_list:
+        st.warning("피킹리스트에서 불명확한 행이 있습니다.")
+        st.json(uncertain_pick_list)
 
     if no_barcode_files:
         st.warning("바코드 미검출 파일이 있습니다. 해당 사진은 수동 확인이 필요합니다.")
         for f in no_barcode_files:
             st.write(f"- {f}")
 
-    with st.expander("상품라벨 바코드 스캔 상세"):
-        st.json(scan_detail)
-
     with st.expander("피킹리스트 GPT 추출 원본"):
         st.json(pick_data)
+
+    with st.expander("상품라벨 바코드 스캔 상세"):
+        st.json(scan_detail)
 
     with st.expander("상품라벨 EAN 집계"):
         st.json(dict(actual))
