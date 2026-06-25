@@ -1,9 +1,9 @@
 streamlit
-openai
-python-dotenv
 pandas
-truststore
+python-dotenv
 pillow
+openai
+truststore
 zxing-cpp
 fastapi
 uvicorn
