@@ -1,5 +1,6 @@
 import os
 import traceback
+from typing import List
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
@@ -29,7 +30,7 @@ def home():
 
 
 @app.post("/check")
-async def check(files: list[UploadFile] = File(...)):
+async def check(files: List[UploadFile] = File(...)):
     try:
         if not os.getenv("OPENAI_API_KEY"):
             return JSONResponse(
@@ -53,6 +54,16 @@ async def check(files: list[UploadFile] = File(...)):
 
         for file in files:
             file_bytes = await file.read()
+
+            if not file_bytes:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "ok": False,
+                        "error": f"{file.filename} 파일이 비어 있습니다."
+                    }
+                )
+
             image = open_image_fixed_from_bytes(file_bytes)
 
             uploaded_files.append({
