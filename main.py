@@ -1,8 +1,8 @@
 import os
 import traceback
-from typing import List
+from typing import List, Annotated
 
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, File
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 
@@ -30,7 +30,9 @@ def home():
 
 
 @app.post("/check")
-async def check(files: List[UploadFile] = File(...)):
+async def check(
+    files: Annotated[List[bytes], File(description="피킹리스트 1장 + 상품라벨 사진 여러 장")]
+):
     try:
         if not os.getenv("OPENAI_API_KEY"):
             return JSONResponse(
@@ -52,22 +54,20 @@ async def check(files: List[UploadFile] = File(...)):
 
         uploaded_files = []
 
-        for file in files:
-            file_bytes = await file.read()
-
+        for idx, file_bytes in enumerate(files):
             if not file_bytes:
                 return JSONResponse(
                     status_code=400,
                     content={
                         "ok": False,
-                        "error": f"{file.filename} 파일이 비어 있습니다."
+                        "error": f"image_{idx + 1}.jpg 파일이 비어 있습니다."
                     }
                 )
 
             image = open_image_fixed_from_bytes(file_bytes)
 
             uploaded_files.append({
-                "filename": file.filename,
+                "filename": f"image_{idx + 1}.jpg",
                 "image": image
             })
 
