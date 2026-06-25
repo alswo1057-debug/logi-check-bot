@@ -5,3 +5,6 @@ pandas
 truststore
 pillow
 zxing-cpp
+fastapi
+uvicorn
+python-multipart
