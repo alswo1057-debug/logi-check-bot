@@ -8,3 +8,4 @@ zxing-cpp
 fastapi
 uvicorn
 python-multipart
+requests
